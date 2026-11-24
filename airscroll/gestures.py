@@ -35,6 +35,7 @@ class HandPinchController:
         self.last_ratio = 1.0
         self.swipe_history: list[tuple[float, float]] = []
         self.last_swipe_time = 0.0
+        self.last_finger_scroll = 0.0
 
     def reset(self) -> None:
         self.is_pinching = False
@@ -45,12 +46,13 @@ class HandPinchController:
         self.previous_x = None
         self.x_motion_accumulator = 0.0
         self.last_ratio = 1.0
+        self.last_finger_scroll = 0.0
         self.swipe_history.clear()
 
     def update(self, landmarks) -> dict:
         if not landmarks or len(landmarks) < 18:
             self.reset()
-            return {"pinching": False, "ratio": None, "scroll": ""}
+            return {"pinching": False, "ratio": None, "scroll": "", "finger_count": 0, "active_fingers": []}
 
         thumb = landmarks[4]
         index = landmarks[8]
@@ -80,34 +82,72 @@ class HandPinchController:
             self.x_motion_accumulator = 0.0
 
         directions = []
+        finger_count = 0
+        active_fingers = []
 
-        # Open-hand swipe gesture for tab jumping when not pinching
+        # When not pinching, check for 1-finger / 2-finger scroll and open-hand swipe
         if not self.is_pinching:
             now = time.monotonic()
-            palm_x = (landmarks[0].x + landmarks[9].x) / 2.0
-            self.swipe_history.append((now, palm_x))
-            max_duration = getattr(config, "SWIPE_MAX_DURATION", 0.35)
-            self.swipe_history = [(t, x) for (t, x) in self.swipe_history if now - t <= max_duration]
 
-            if len(self.swipe_history) >= 3:
-                start_t, start_x = self.swipe_history[0]
-                dt = now - start_t
-                dx = palm_x - start_x
-                min_dist = getattr(config, "SWIPE_MIN_DISTANCE", 0.18)
-                cooldown = getattr(config, "SWIPE_COOLDOWN_SECONDS", 0.60)
+            # Helper to check if a finger is extended (tip higher & farther from wrist than PIP)
+            def is_ext(tip_idx: int, pip_idx: int) -> bool:
+                d_tip = math.hypot(landmarks[tip_idx].x - landmarks[0].x, landmarks[tip_idx].y - landmarks[0].y)
+                d_pip = math.hypot(landmarks[pip_idx].x - landmarks[0].x, landmarks[pip_idx].y - landmarks[0].y)
+                return d_tip > d_pip * 1.10 and landmarks[tip_idx].y < landmarks[pip_idx].y
 
-                if dt >= 0.08 and abs(dx) >= min_dist:
-                    if now - self.last_swipe_time >= cooldown:
-                        if dx > 0:
-                            directions.append("SWIPE RIGHT: NEXT TAB")
-                            if self.on_next_tab:
-                                self.on_next_tab()
-                        else:
-                            directions.append("SWIPE LEFT: PREV TAB")
-                            if self.on_prev_tab:
-                                self.on_prev_tab()
-                        self.last_swipe_time = now
-                        self.swipe_history.clear()
+            index_ext = is_ext(8, 6)
+            middle_ext = is_ext(12, 10)
+            ring_ext = is_ext(16, 14)
+            pinky_ext = is_ext(20, 18)
+
+            finger_interval = getattr(config, "FINGER_SCROLL_INTERVAL", 0.07)
+
+            # 1 Finger (Index extended, others folded) -> SCROLL UP
+            if index_ext and not middle_ext and not ring_ext and not pinky_ext:
+                finger_count = 1
+                active_fingers = [8]
+                if now - self.last_finger_scroll >= finger_interval:
+                    self.scroll(1)
+                    self.last_finger_scroll = now
+                directions.append("1 FINGER: SCROLL UP")
+                self.swipe_history.clear()
+
+            # 2 Fingers (Index & Middle extended, others folded) -> SCROLL DOWN
+            elif index_ext and middle_ext and not ring_ext and not pinky_ext:
+                finger_count = 2
+                active_fingers = [8, 12]
+                if now - self.last_finger_scroll >= finger_interval:
+                    self.scroll(-1)
+                    self.last_finger_scroll = now
+                directions.append("2 FINGERS: SCROLL DOWN")
+                self.swipe_history.clear()
+
+            # Open-hand horizontal swipe for tab switching
+            else:
+                palm_x = (landmarks[0].x + landmarks[9].x) / 2.0
+                self.swipe_history.append((now, palm_x))
+                max_duration = getattr(config, "SWIPE_MAX_DURATION", 0.35)
+                self.swipe_history = [(t, x) for (t, x) in self.swipe_history if now - t <= max_duration]
+
+                if len(self.swipe_history) >= 3:
+                    start_t, start_x = self.swipe_history[0]
+                    dt = now - start_t
+                    dx = palm_x - start_x
+                    min_dist = getattr(config, "SWIPE_MIN_DISTANCE", 0.18)
+                    cooldown = getattr(config, "SWIPE_COOLDOWN_SECONDS", 0.60)
+
+                    if dt >= 0.08 and abs(dx) >= min_dist:
+                        if now - self.last_swipe_time >= cooldown:
+                            if dx > 0:
+                                directions.append("SWIPE RIGHT: NEXT TAB")
+                                if self.on_next_tab:
+                                    self.on_next_tab()
+                            else:
+                                directions.append("SWIPE LEFT: PREV TAB")
+                                if self.on_prev_tab:
+                                    self.on_prev_tab()
+                            self.last_swipe_time = now
+                            self.swipe_history.clear()
         if self.is_pinching:
             raw_y = (thumb.y + index.y) / 2.0
             raw_x = (thumb.x + index.x) / 2.0
@@ -171,7 +211,13 @@ class HandPinchController:
             self.previous_x = self.smoothed_x
 
         scroll_direction = " + ".join(directions)
-        return {"pinching": self.is_pinching, "ratio": ratio, "scroll": scroll_direction}
+        return {
+            "pinching": self.is_pinching,
+            "ratio": ratio,
+            "scroll": scroll_direction,
+            "finger_count": finger_count,
+            "active_fingers": active_fingers,
+        }
 
 
 class BlinkController:
@@ -242,4 +288,5 @@ class BlinkController:
             "closed": self.eyes_closed,
             "score": blink_score,
             "action": self.last_action,
+            "threshold": config.BLINK_START_SCORE,
         }

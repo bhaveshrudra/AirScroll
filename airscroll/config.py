@@ -38,12 +38,15 @@ SWIPE_MIN_DISTANCE = 0.18
 SWIPE_MAX_DURATION = 0.35
 SWIPE_COOLDOWN_SECONDS = 0.60
 
-# Face blendshape thresholds for intentional blinks.
-BLINK_START_SCORE = 0.62
-BLINK_RELEASE_SCORE = 0.35
-BLINK_MIN_CLOSED_SECONDS = 0.09
-BLINK_MAX_CLOSED_SECONDS = 0.70
-BLINK_REARM_SECONDS = 0.18
-DOUBLE_BLINK_WINDOW_SECONDS = 0.58
-SINGLE_BLINK_DELAY_SECONDS = 0.64
+# Finger count continuous scrolling (1 finger = up, 2 fingers = down)
+FINGER_SCROLL_INTERVAL = 0.07  # Seconds between scroll pulses while holding fingers
+
+# Face blendshape thresholds for intentional blinks (calibrated for high accuracy).
+BLINK_START_SCORE = 0.50  # Lowered from 0.62 for reliable, natural detection
+BLINK_RELEASE_SCORE = 0.28  # Eyelids open threshold
+BLINK_MIN_CLOSED_SECONDS = 0.08  # Minimum intentional blink closure duration
+BLINK_MAX_CLOSED_SECONDS = 0.85  # Maximum closed duration
+BLINK_REARM_SECONDS = 0.15  # Cooldown between consecutive blinks
+DOUBLE_BLINK_WINDOW_SECONDS = 0.48  # Window to catch second blink for scroll-up
+SINGLE_BLINK_DELAY_SECONDS = 0.40  # Faster response for single blink scroll-down
 BLINK_SCROLL_AMOUNT = 5

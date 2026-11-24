@@ -50,7 +50,7 @@ def draw_hud(
         cv2.putText(frame, detail[:70], (24, 124), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 195, 215), 1)
     cv2.putText(
         frame,
-        "Pinch: Scroll | Swipe: Tabs | Ctrl+Shift+Alt: 1/2 Mode | +/- Spd | Q Quit",
+        "Alt+1: Hand | Alt+2: Blink | 1 Finger: Up | 2 Fingers: Down | Alt+P: Pause | Alt+Q: Quit",
         (24, 145),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.38,
@@ -70,7 +70,15 @@ def get_blink_score(face_result) -> Optional[float]:
     }
     left = scores.get("eyeBlinkLeft", 0.0)
     right = scores.get("eyeBlinkRight", 0.0)
-    return (left + right) / 2.0
+
+    # Squint compensation prevents false triggers during laughter or squints
+    squint = (scores.get("eyeSquintLeft", 0.0) + scores.get("eyeSquintRight", 0.0)) / 2.0
+    squint_penalty = max(0.0, squint - 0.5) * 0.2
+
+    # Weight towards the less-closed eye (65%) to ensure BOTH eyes close for an intentional blink,
+    # with 35% weight on the other eye to accommodate slight natural asymmetry.
+    combined = min(left, right) * 0.65 + max(left, right) * 0.35 - squint_penalty
+    return max(0.0, min(1.0, combined))
 
 
 def open_camera():
@@ -110,13 +118,15 @@ def main() -> int:
 
     print("\nAirScroll is starting...")
     print("Global shortcuts work while your browser or PDF reader is focused:")
-    print("  Ctrl+Shift+Alt+1  -> Hand Pinch mode")
-    print("  Ctrl+Shift+Alt+2  -> Blink mode")
-    print("  Ctrl+Shift+Alt+=  -> Increase sensitivity (+)")
-    print("  Ctrl+Shift+Alt+-  -> Decrease sensitivity (-)")
-    print("  Ctrl+Shift+Alt+0  -> Reset sensitivity (1.0x)")
-    print("  Ctrl+Shift+Alt+P  -> Pause / resume")
-    print("  Ctrl+Shift+Alt+Q  -> Quit\n")
+    print("  Alt+1       -> Hand mode (1 Finger Up / 2 Fingers Down / Pinch)")
+    print("  Alt+2       -> Blink mode (Single blink Down / Double blink Up)")
+    print("  Alt+=       -> Increase sensitivity (+)")
+    print("  Alt+-       -> Decrease sensitivity (-)")
+    print("  Alt+0       -> Reset sensitivity (1.0x)")
+    print("  Alt+N / Alt+Right -> Next Tab")
+    print("  Alt+B / Alt+Left  -> Previous Tab")
+    print("  Alt+P       -> Pause / resume")
+    print("  Alt+Q       -> Quit\n")
     print("Camera frames are processed locally; no video is uploaded or recorded.\n")
 
     try:
@@ -152,7 +162,7 @@ def main() -> int:
                 detail = ""
 
             if paused:
-                draw_hud(frame, mode, True, sensitivity, "Paused. Use Ctrl+Shift+Alt+P to resume.")
+                draw_hud(frame, mode, True, sensitivity, "Paused. Use Alt+P to resume.")
             else:
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
@@ -166,24 +176,65 @@ def main() -> int:
                         gesture = hand_controller.update(hand)
 
                         if hand:
+                            h, w = frame.shape[:2]
                             thumb = hand[4]
                             index = hand[8]
-                            h, w = frame.shape[:2]
-                            thumb_point = (int(thumb.x * w), int(thumb.y * h))
-                            index_point = (int(index.x * w), int(index.y * h))
-                            cv2.line(frame, thumb_point, index_point, (80, 220, 255), 2)
-                            cv2.circle(frame, thumb_point, 8, (80, 220, 255), -1)
-                            cv2.circle(frame, index_point, 8, (80, 220, 255), -1)
+                            middle = hand[12]
 
-                        if gesture["pinching"]:
-                            last_message = "PINCH LOCKED — move hand up/down to scroll"
+                            # Visual highlight: 1 Finger pointing UP
+                            if gesture.get("finger_count") == 1:
+                                idx_pt = (int(index.x * w), int(index.y * h))
+                                cv2.circle(frame, idx_pt, 16, (0, 255, 120), 3)
+                                cv2.circle(frame, idx_pt, 6, (0, 255, 120), -1)
+                                cv2.putText(
+                                    frame,
+                                    "1 FINGER: SCROLL UP",
+                                    (idx_pt[0] - 55, idx_pt[1] - 22),
+                                    cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.55,
+                                    (0, 255, 120),
+                                    2,
+                                )
+
+                            # Visual highlight: 2 Fingers pointing (Peace / Down)
+                            elif gesture.get("finger_count") == 2:
+                                idx_pt = (int(index.x * w), int(index.y * h))
+                                mid_pt = (int(middle.x * w), int(middle.y * h))
+                                cv2.circle(frame, idx_pt, 14, (255, 180, 0), 3)
+                                cv2.circle(frame, mid_pt, 14, (255, 180, 0), 3)
+                                cv2.circle(frame, idx_pt, 6, (255, 180, 0), -1)
+                                cv2.circle(frame, mid_pt, 6, (255, 180, 0), -1)
+                                cv2.putText(
+                                    frame,
+                                    "2 FINGERS: SCROLL DOWN",
+                                    (idx_pt[0] - 70, idx_pt[1] - 22),
+                                    cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.55,
+                                    (255, 180, 0),
+                                    2,
+                                )
+
+                            # Visual highlight: Pinch grab
+                            elif gesture["pinching"]:
+                                thumb_point = (int(thumb.x * w), int(thumb.y * h))
+                                index_point = (int(index.x * w), int(index.y * h))
+                                cv2.line(frame, thumb_point, index_point, (80, 220, 255), 3)
+                                cv2.circle(frame, thumb_point, 8, (80, 220, 255), -1)
+                                cv2.circle(frame, index_point, 8, (80, 220, 255), -1)
+
+                        if gesture.get("finger_count") == 1:
+                            last_message = "1 FINGER HELD — Continuous scroll UP"
+                        elif gesture.get("finger_count") == 2:
+                            last_message = "2 FINGERS HELD — Continuous scroll DOWN"
+                        elif gesture["pinching"]:
+                            last_message = "PINCH LOCKED — move hand up/down/left/right"
                         elif hand:
-                            last_message = "Hand detected — bring thumb and index finger together."
+                            last_message = "1 finger = UP | 2 fingers = DOWN | Pinch = drag scroll"
                         else:
-                            last_message = "Show one hand to the webcam."
+                            last_message = "Show hand: 1 finger UP | 2 fingers DOWN | Pinch"
 
                         if gesture["scroll"]:
-                            detail = f"Scrolling {gesture['scroll'].lower()}"
+                            detail = f"Action: {gesture['scroll']}"
                         elif gesture["ratio"] is not None:
                             detail = f"Pinch ratio: {gesture['ratio']:.2f}"
 
@@ -198,12 +249,36 @@ def main() -> int:
                             detail = "Waiting for face detection..."
                         else:
                             last_message = "Blink once = down | quick double-blink = up"
-                            detail = f"Eye blink score: {face_score:.2f}"
+                            thresh = gesture.get("threshold", 0.50)
+                            detail = f"Blink Score: {face_score:.2f} (Trigger: {thresh:.2f})"
+
+                            # Real-time visual blink meter bar
+                            h, w = frame.shape[:2]
+                            bar_x, bar_y, bar_w, bar_h = 24, h - 34, 180, 16
+                            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (35, 40, 50), -1)
+                            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (110, 120, 140), 1)
+                            fill_w = int(max(0.0, min(1.0, face_score)) * bar_w)
+                            bar_color = (0, 235, 120) if face_score >= thresh else (80, 190, 255)
+                            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h), bar_color, -1)
+
+                            # Red threshold tick line
+                            tx = int(bar_x + thresh * bar_w)
+                            cv2.line(frame, (tx, bar_y - 2), (tx, bar_y + bar_h + 2), (0, 0, 255), 2)
+                            cv2.putText(
+                                frame,
+                                f"{int(face_score * 100)}%",
+                                (bar_x + bar_w + 10, bar_y + 13),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.42,
+                                (230, 235, 245),
+                                1,
+                            )
+
                             if gesture["closed"]:
                                 cv2.putText(
                                     frame,
                                     "EYES CLOSED",
-                                    (24, frame.shape[0] - 28),
+                                    (24, bar_y - 12),
                                     cv2.FONT_HERSHEY_SIMPLEX,
                                     0.65,
                                     (80, 220, 255),
